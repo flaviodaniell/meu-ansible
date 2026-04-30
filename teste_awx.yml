@@ -1,0 +1,15 @@
+---
+- name: Teste AWX
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: Instalar htop
+      package:
+        name: htop
+        state: present
+
+    - name: Criar arquivo de teste
+      copy:
+        dest: /tmp/awx_teste.txt
+        content: "AWX funcionando!"
