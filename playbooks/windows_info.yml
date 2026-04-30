@@ -11,6 +11,11 @@
 
 
 
+    - name: Criar diretório C:\Temp
+      win_file:
+        path: C:\Temp
+        state: directory
+
     - name: Criar arquivo de teste
       win_copy:
         content: "AWX funcionando no Windows!"
