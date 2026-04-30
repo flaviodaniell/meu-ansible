@@ -1,0 +1,20 @@
+# playbooks/windows_info.yml
+---
+- name: Info Windows
+  hosts: all
+  gather_facts: yes
+
+  tasks:
+    - name: Verificar uptime
+      win_shell: (Get-Date) - (gcim Win32_OperatingSystem).LastBootUpTime
+      register: uptime
+
+    - name: Instalar feature (IIS como exemplo)
+      win_feature:
+        name: Web-Server
+        state: present
+
+    - name: Criar arquivo de teste
+      win_copy:
+        content: "AWX funcionando no Windows!"
+        dest: C:\Temp\awx_teste.txt
