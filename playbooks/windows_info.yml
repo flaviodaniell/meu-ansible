@@ -1,7 +1,7 @@
 # playbooks/windows_info.yml
 ---
 - name: Info Windows
-  hosts: all
+  hosts: windows
   gather_facts: yes
 
   tasks:
