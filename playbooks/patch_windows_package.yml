@@ -1,0 +1,32 @@
+---
+# Playbook de patch de pacote no Windows, disparado pelo Sentinel AIOps via AWX.
+- name: Patch de pacote (Sentinel AIOps)
+  hosts: all
+  gather_facts: false
+
+  vars:
+    # Mapeia o nome do pacote (como aparece no Wazuh) -> ID do winget
+    winget_ids:
+      "Google Chrome": "Google.Chrome"
+      # Ajuste conforme seu ambiente:
+      # "Microsoft ASP.NET Core 9.0.6 Shared Framework (x64)": "Microsoft.DotNet.AspNetCore.9"
+      # "Microsoft ASP.NET Core 8.0.17 Shared Framework (x64)": "Microsoft.DotNet.AspNetCore.8"
+    winget_id: "{{ winget_ids[package] | default('') }}"
+
+  tasks:
+    - name: Abortar se o pacote não estiver mapeado
+      ansible.builtin.fail:
+        msg: "Pacote '{{ package }}' sem winget_id mapeado — ajuste winget_ids no playbook."
+      when: winget_id | length == 0
+
+    - name: "Atualizar {{ package }} (alvo {{ target_version | default('latest') }}) via winget"
+      ansible.windows.win_command: >-
+        winget upgrade --id {{ winget_id }} --silent
+        --accept-package-agreements --accept-source-agreements
+      register: winget_out
+      failed_when: winget_out.rc not in [0]
+      changed_when: "'No applicable update found' not in (winget_out.stdout | default(''))"
+
+    - name: Mostrar resultado
+      ansible.builtin.debug:
+        var: winget_out.stdout_lines
