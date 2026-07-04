@@ -4,34 +4,52 @@
   gather_facts: false
 
   vars:
-    msi_urls:
-      "Google Chrome": "http://10.0.0.67:8081/googlechrome.msi"
-    msi_url: "{{ msi_urls[package] | default('') }}"
-    msi_dest: 'C:\Windows\Temp\sentinel_patch.msi'
+    installers:
+      "Google Chrome":
+        url: "http://10.0.0.67:8081/googlechrome.msi"
+        type: msi
+      "Microsoft ASP.NET Core 9.0.6 Shared Framework (x64)":
+        url: "http://10.0.0.67:8081/aspnetcore-9.0.10-x64.exe"
+        type: exe
+      "Microsoft ASP.NET Core 8.0.17 Shared Framework (x64)":
+        url: "http://10.0.0.67:8081/aspnetcore-8.0.21-x64.exe"
+        type: exe
+      "Microsoft ASP.NET Core 8.0.17 Shared Framework (x86)":
+        url: "http://10.0.0.67:8081/aspnetcore-8.0.21-x86.exe"
+        type: exe
+    inst: "{{ installers[package] | default({}) }}"
+    dest: "C:\\Windows\\Temp\\sentinel_patch.{{ inst.type | default('bin') }}"
 
   tasks:
     - name: Abortar se o pacote não tiver instalador mapeado
       ansible.builtin.fail:
-        msg: "Pacote '{{ package }}' sem MSI mapeado."
-      when: msi_url | length == 0
+        msg: "Pacote '{{ package }}' sem instalador mapeado."
+      when: inst.url is not defined
 
     - name: "Baixar o instalador de {{ package }} (LAN)"
       ansible.windows.win_get_url:
-        url: "{{ msi_url }}"
-        dest: "{{ msi_dest }}"
+        url: "{{ inst.url }}"
+        dest: "{{ dest }}"
         force: true
         timeout: 600
 
-    - name: "Instalar/atualizar {{ package }}"
-      ansible.windows.win_command: msiexec /i {{ msi_dest }} /qn /norestart
+    - name: "Instalar/atualizar {{ package }} (MSI)"
+      ansible.windows.win_command: msiexec /i {{ dest }} /qn /norestart
       register: msi_out
-      failed_when: msi_out.rc not in [0, 3010]
+      when: inst.type == 'msi'
+      failed_when: msi_out.rc is defined and msi_out.rc not in [0, 3010]
+
+    - name: "Instalar/atualizar {{ package }} (EXE)"
+      ansible.windows.win_command: "{{ dest }} /install /quiet /norestart"
+      register: exe_out
+      when: inst.type == 'exe'
+      failed_when: exe_out.rc is defined and exe_out.rc not in [0, 3010]
 
     - name: Remover o instalador temporário
       ansible.windows.win_file:
-        path: "{{ msi_dest }}"
+        path: "{{ dest }}"
         state: absent
 
     - name: Resultado
       ansible.builtin.debug:
-        msg: "msiexec rc={{ msi_out.rc }}"
+        msg: "patch de {{ package }} aplicado (tipo {{ inst.type }})"
