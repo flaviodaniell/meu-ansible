@@ -45,6 +45,19 @@
       when: inst.type == 'exe'
       failed_when: exe_out.rc is defined and exe_out.rc not in [0, 3010]
 
+    - name: "Remover a versão vulnerável: {{ package }}"
+      ansible.windows.win_shell: |
+        $name = '{{ package }}'
+        $roots = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        $item = Get-ItemProperty $roots -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $name } | Select-Object -First 1
+        if (-not $item) { Write-Output 'ja-removido'; exit 0 }
+        $p = Start-Process msiexec -ArgumentList "/x $($item.PSChildName) /qn /norestart" -Wait -PassThru
+        Write-Output "uninstall rc=$($p.ExitCode)"
+        if ($p.ExitCode -notin 0,1605,3010) { exit $p.ExitCode }
+      when: inst.type == 'exe'
+      register: uninstall_out
+      changed_when: "'ja-removido' not in uninstall_out.stdout"
+
     - name: Remover o instalador temporário
       ansible.windows.win_file:
         path: "{{ dest }}"
