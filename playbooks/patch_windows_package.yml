@@ -4,22 +4,33 @@
   gather_facts: false
 
   vars:
-    choco_ids:
-      "Google Chrome": "googlechrome"
-    choco_id: "{{ choco_ids[package] | default('') }}"
+    msi_urls:
+      "Google Chrome": "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi"
+    msi_url: "{{ msi_urls[package] | default('') }}"
+    msi_dest: 'C:\Windows\Temp\sentinel_patch.msi'
 
   tasks:
-    - name: Abortar se o pacote não estiver mapeado
+    - name: Abortar se o pacote não tiver instalador mapeado
       ansible.builtin.fail:
-        msg: "Pacote '{{ package }}' sem choco_id mapeado."
-      when: choco_id | length == 0
+        msg: "Pacote '{{ package }}' sem MSI mapeado."
+      when: msi_url | length == 0
 
-    - name: "Atualizar {{ package }} via Chocolatey"
-      chocolatey.chocolatey.win_chocolatey:
-        name: "{{ choco_id }}"
-        state: latest
-      register: choco_out
+    - name: "Baixar o instalador de {{ package }}"
+      ansible.windows.win_get_url:
+        url: "{{ msi_url }}"
+        dest: "{{ msi_dest }}"
+        force: true
 
-    - name: Mostrar resultado
+    - name: "Instalar/atualizar {{ package }}"
+      ansible.windows.win_command: msiexec /i {{ msi_dest }} /qn /norestart
+      register: msi_out
+      failed_when: msi_out.rc not in [0, 3010]
+
+    - name: Remover o instalador temporário
+      ansible.windows.win_file:
+        path: "{{ msi_dest }}"
+        state: absent
+
+    - name: Resultado
       ansible.builtin.debug:
-        msg: "changed={{ choco_out.changed }}"
+        msg: "msiexec rc={{ msi_out.rc }}"
