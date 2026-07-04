@@ -20,6 +20,7 @@
         url: "{{ msi_url }}"
         dest: "{{ msi_dest }}"
         force: true
+        timeout: 600
 
     - name: "Instalar/atualizar {{ package }}"
       ansible.windows.win_command: msiexec /i {{ msi_dest }} /qn /norestart
