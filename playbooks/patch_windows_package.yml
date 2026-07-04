@@ -5,27 +5,32 @@
   gather_facts: false
 
   vars:
-    # Mapeia o nome do pacote (como aparece no Wazuh) -> ID do winget
     winget_ids:
       "Google Chrome": "Google.Chrome"
-      # Ajuste conforme seu ambiente:
-      # "Microsoft ASP.NET Core 9.0.6 Shared Framework (x64)": "Microsoft.DotNet.AspNetCore.9"
-      # "Microsoft ASP.NET Core 8.0.17 Shared Framework (x64)": "Microsoft.DotNet.AspNetCore.8"
     winget_id: "{{ winget_ids[package] | default('') }}"
 
   tasks:
     - name: Abortar se o pacote não estiver mapeado
       ansible.builtin.fail:
-        msg: "Pacote '{{ package }}' sem winget_id mapeado — ajuste winget_ids no playbook."
+        msg: "Pacote '{{ package }}' sem winget_id mapeado."
       when: winget_id | length == 0
 
-    - name: "Atualizar {{ package }} (alvo {{ target_version | default('latest') }}) via winget"
-      ansible.windows.win_command: >-
-        winget upgrade --id {{ winget_id }} --silent
-        --accept-package-agreements --accept-source-agreements
+    - name: Localizar o winget.exe (App Installer, caminho system-wide)
+      ansible.windows.win_shell: |
+        $p = Get-ChildItem -Path "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue |
+             Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
+        if (-not $p) { Write-Error "winget.exe nao encontrado"; exit 3 }
+        $p
+      register: winget_path
+      changed_when: false
+
+    - name: "Atualizar {{ package }} via winget"
+      ansible.windows.win_shell: >-
+        & '{{ winget_path.stdout | trim }}' upgrade --id {{ winget_id }}
+        --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
       register: winget_out
-      failed_when: winget_out.rc not in [0]
-      changed_when: "'No applicable update found' not in (winget_out.stdout | default(''))"
+      failed_when: winget_out.rc not in [0, -1978335189]
+      changed_when: winget_out.rc == 0
 
     - name: Mostrar resultado
       ansible.builtin.debug:
