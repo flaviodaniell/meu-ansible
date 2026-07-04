@@ -5,7 +5,7 @@
 
   vars:
     msi_urls:
-      "Google Chrome": "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi"
+      "Google Chrome": "http://10.0.0.67:8081/googlechrome.msi"
     msi_url: "{{ msi_urls[package] | default('') }}"
     msi_dest: 'C:\Windows\Temp\sentinel_patch.msi'
 
@@ -15,7 +15,7 @@
         msg: "Pacote '{{ package }}' sem MSI mapeado."
       when: msi_url | length == 0
 
-    - name: "Baixar o instalador de {{ package }}"
+    - name: "Baixar o instalador de {{ package }} (LAN)"
       ansible.windows.win_get_url:
         url: "{{ msi_url }}"
         dest: "{{ msi_dest }}"
