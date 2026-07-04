@@ -1,37 +1,25 @@
 ---
-# Playbook de patch de pacote no Windows, disparado pelo Sentinel AIOps via AWX.
 - name: Patch de pacote (Sentinel AIOps)
   hosts: all
   gather_facts: false
 
   vars:
-    winget_ids:
-      "Google Chrome": "Google.Chrome"
-    winget_id: "{{ winget_ids[package] | default('') }}"
+    choco_ids:
+      "Google Chrome": "googlechrome"
+    choco_id: "{{ choco_ids[package] | default('') }}"
 
   tasks:
     - name: Abortar se o pacote não estiver mapeado
       ansible.builtin.fail:
-        msg: "Pacote '{{ package }}' sem winget_id mapeado."
-      when: winget_id | length == 0
+        msg: "Pacote '{{ package }}' sem choco_id mapeado."
+      when: choco_id | length == 0
 
-    - name: Localizar o winget.exe (App Installer, caminho system-wide)
-      ansible.windows.win_shell: |
-        $p = Get-ChildItem -Path "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue |
-             Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
-        if (-not $p) { Write-Error "winget.exe nao encontrado"; exit 3 }
-        $p
-      register: winget_path
-      changed_when: false
-
-    - name: "Atualizar {{ package }} via winget"
-      ansible.windows.win_shell: >-
-        & '{{ winget_path.stdout | trim }}' upgrade --id {{ winget_id }}
-        --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
-      register: winget_out
-      failed_when: winget_out.rc not in [0, -1978335189]
-      changed_when: winget_out.rc == 0
+    - name: "Atualizar {{ package }} via Chocolatey"
+      chocolatey.chocolatey.win_chocolatey:
+        name: "{{ choco_id }}"
+        state: latest
+      register: choco_out
 
     - name: Mostrar resultado
       ansible.builtin.debug:
-        var: winget_out.stdout_lines
+        msg: "changed={{ choco_out.changed }}"
