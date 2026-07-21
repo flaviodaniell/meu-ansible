@@ -21,19 +21,27 @@
         checksum: "1134b85430faaa808a30ce50457577e06a841a2091e132bb5eaae6acf29369adec55afc65d7de3d32636fb73db4d4a99e3075049941d005737abf8b787eed746"
         checksum_algorithm: sha512
       "Microsoft ASP.NET Core 8.0.17 Shared Framework (x64)":
-        url: "http://10.0.0.67:8081/aspnetcore-8.0.21-x64.exe"
+        url: "http://10.0.0.67:8081/dotnet-sdk-8.0.423-win-x64.exe"
         type: exe
         family: dotnet
         runtime: Microsoft.AspNetCore.App
         vulnerable_version: "8.0.17"
+        corrected_runtime_version: "8.0.29"
+        vulnerable_sdk_version: "8.0.411"
+        corrected_sdk_version: "8.0.423"
         architecture: x64
+        checksum: "c365dd24c04ee88e4c7af34165c2fbcff6cb2b551bc8cd921221b5774b10eb7e119a5056c33b36fea8d1bc494f71f3246e0c66f4b69c1d17b7e7804b922346d5"
+        checksum_algorithm: sha512
       "Microsoft ASP.NET Core 8.0.17 Shared Framework (x86)":
-        url: "http://10.0.0.67:8081/aspnetcore-8.0.21-x86.exe"
+        url: "http://10.0.0.67:8081/aspnetcore-runtime-8.0.29-win-x86.exe"
         type: exe
         family: dotnet
         runtime: Microsoft.AspNetCore.App
         vulnerable_version: "8.0.17"
+        corrected_runtime_version: "8.0.29"
         architecture: x86
+        checksum: "f606ec1fa240233a45f805655f5c01c82e3abc1e8ffc6fcc71d30ea0a7ddf611de9f1603db448934582ee907e6670be5eb426704c8eeac6e36d38fc48a7f3ba4"
+        checksum_algorithm: sha512
     inst: "{{ installers[package] | default({}) }}"
     dest: "C:\\Windows\\Temp\\sentinel_patch.{{ inst.type | default('bin') }}"
     dotnet_uninstall_tool_url: "http://10.0.0.67:8081/dotnet-core-uninstall-1.7.661902.msi"
