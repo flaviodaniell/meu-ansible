@@ -9,12 +9,17 @@
         url: "http://10.0.0.67:8081/googlechrome.msi"
         type: msi
       "Microsoft ASP.NET Core 9.0.6 Shared Framework (x64)":
-        url: "http://10.0.0.67:8081/aspnetcore-9.0.10-x64.exe"
+        url: "http://10.0.0.67:8081/dotnet-sdk-9.0.316-win-x64.exe"
         type: exe
         family: dotnet
         runtime: Microsoft.AspNetCore.App
         vulnerable_version: "9.0.6"
+        corrected_runtime_version: "9.0.18"
+        vulnerable_sdk_version: "9.0.301"
+        corrected_sdk_version: "9.0.316"
         architecture: x64
+        checksum: "1134b85430faaa808a30ce50457577e06a841a2091e132bb5eaae6acf29369adec55afc65d7de3d32636fb73db4d4a99e3075049941d005737abf8b787eed746"
+        checksum_algorithm: sha512
       "Microsoft ASP.NET Core 8.0.17 Shared Framework (x64)":
         url: "http://10.0.0.67:8081/aspnetcore-8.0.21-x64.exe"
         type: exe
@@ -44,10 +49,49 @@
 
     - name: Aplicar patch e validar remediação
       block:
+        - name: Verificar pins estritos do SDK vulnerável em global.json
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            $sdkVersion = '{{ inst.vulnerable_sdk_version | default('') }}'
+            if (-not $sdkVersion) { exit 0 }
+
+            $scanRoots = @()
+            foreach ($drive in Get-PSDrive -PSProvider FileSystem) {
+              foreach ($relative in @('projetos', 'src', 'inetpub', 'Users')) {
+                $candidate = Join-Path $drive.Root $relative
+                if (Test-Path $candidate) { $scanRoots += $candidate }
+              }
+            }
+            $blocked = @()
+            $pins = @()
+            foreach ($root in ($scanRoots | Select-Object -Unique)) {
+              foreach ($file in Get-ChildItem $root -Filter global.json -File -Recurse -ErrorAction SilentlyContinue) {
+                try {
+                  $config = Get-Content $file.FullName -Raw | ConvertFrom-Json
+                  if ($config.sdk.version -eq $sdkVersion) {
+                    $rollForward = [string]$config.sdk.rollForward
+                    $pins += "$($file.FullName) rollForward=$rollForward"
+                    if ($rollForward -eq 'disable') { $blocked += $file.FullName }
+                  }
+                } catch {
+                  throw "global.json inválido em $($file.FullName): $($_.Exception.Message)"
+                }
+              }
+            }
+            Write-Output "sdk_pins=$($pins.Count)"
+            $pins | ForEach-Object { Write-Output "sdk_pin=$_" }
+            if ($blocked.Count -gt 0) {
+              throw "SDK $sdkVersion possui pin estrito (rollForward=disable): $($blocked -join ', ')"
+            }
+          when: inst.vulnerable_sdk_version | default('') | length > 0
+          changed_when: false
+
         - name: "Baixar o instalador de {{ package }} (LAN)"
           ansible.windows.win_get_url:
             url: "{{ inst.url }}"
             dest: "{{ dest }}"
+            checksum: "{{ inst.checksum | default(omit) }}"
+            checksum_algorithm: "{{ inst.checksum_algorithm | default('sha256') }}"
             force: true
             timeout: 600
 
@@ -119,6 +163,78 @@
             'uninstall_tool_target=hosting-bundle' in
             (dotnet_uninstall_out.stdout | default(''))
 
+        - name: "Remover SDK proprietário do runtime vulnerável: {{ package }}"
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            $tool = '{{ dotnet_uninstall_tool_exe }}'
+            $sdkVersion = '{{ inst.vulnerable_sdk_version | default('') }}'
+            $architecture = '--{{ inst.architecture }}'
+            if (-not $sdkVersion) { exit 0 }
+
+            $sdkList = @(& $tool list --sdk $architecture 2>&1)
+            Write-Output '=== removable sdks ==='
+            Write-Output ($sdkList -join "`n")
+            $sdkPattern = '(?m)^\s*' + [regex]::Escape($sdkVersion) + '\s+' +
+              [regex]::Escape('{{ inst.architecture }}') + '(?:\s|$)'
+            if (($sdkList -join "`n") -match $sdkPattern) {
+              & $tool remove $sdkVersion --sdk $architecture --yes
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              Write-Output 'sdk_uninstall=dotnet-uninstall-tool'
+              exit 0
+            }
+
+            $displayName = "Microsoft .NET SDK $sdkVersion ({{ inst.architecture }})"
+            $roots = @(
+              'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+              'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+            )
+            $items = @(Get-ItemProperty $roots -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName -eq $displayName })
+            if ($items.Count -eq 0) {
+              Write-Output 'sdk_uninstall=already-absent'
+              exit 0
+            }
+
+            foreach ($item in $items) {
+              $raw = if ($item.QuietUninstallString) {
+                [string]$item.QuietUninstallString
+              } elseif ($item.UninstallString) {
+                [string]$item.UninstallString
+              } elseif ([string]$item.PSChildName -match '^\{[0-9A-Fa-f-]+\}$') {
+                "msiexec.exe /x $($item.PSChildName)"
+              } else {
+                throw "Sem comando de desinstalação para SDK '$displayName'"
+              }
+
+              if ($raw -match '^(?i)\s*\"?[^\"]*msiexec(?:\.exe)?\"?\s+(.*)$') {
+                $file = 'msiexec.exe'
+                $arguments = $Matches[1] -replace '(?i)/I(?=\s*\{)', '/x'
+                if ($arguments -notmatch '(?i)/q') { $arguments += ' /qn' }
+                if ($arguments -notmatch '(?i)/norestart') { $arguments += ' /norestart' }
+              } elseif ($raw -match '^\s*\"([^\"]+)\"\s*(.*)$') {
+                $file = $Matches[1]
+                $arguments = $Matches[2]
+                if ($arguments -notmatch '(?i)/(quiet|passive|qn)') {
+                  $arguments += ' /quiet /norestart'
+                }
+              } else {
+                $parts = $raw.Trim() -split '\s+', 2
+                $file = $parts[0]
+                $arguments = if ($parts.Count -gt 1) { $parts[1] } else { '' }
+                if ($arguments -notmatch '(?i)/(quiet|passive|qn)') {
+                  $arguments += ' /quiet /norestart'
+                }
+              }
+
+              $process = Start-Process -FilePath $file -ArgumentList $arguments -Wait -PassThru
+              Write-Output "sdk uninstall product=$($item.PSChildName) rc=$($process.ExitCode)"
+              if ($process.ExitCode -notin 0, 1605, 3010) { exit $process.ExitCode }
+            }
+            Write-Output 'sdk_uninstall=registry'
+          when: inst.vulnerable_sdk_version | default('') | length > 0
+          register: sdk_uninstall_out
+          changed_when: "'sdk_uninstall=already-absent' not in (sdk_uninstall_out.stdout | default(''))"
+
         # O instalador .NET adiciona a versão corrigida lado a lado. Removemos
         # todas as entradas da versão vulnerável usando o comando registrado
         # pelo próprio pacote; PSChildName é somente o fallback para MSI.
@@ -189,7 +305,9 @@
             $name = '{{ package }}'
             $runtimeName = '{{ inst.runtime }}'
             $vulnerableVersion = '{{ inst.vulnerable_version }}'
-            $targetVersion = '{{ target_version }}'
+            $targetVersion = '{{ inst.corrected_runtime_version | default(target_version) }}'
+            $vulnerableSdkVersion = '{{ inst.vulnerable_sdk_version | default('') }}'
+            $correctedSdkVersion = '{{ inst.corrected_sdk_version | default('') }}'
             $architecture = '{{ inst.architecture }}'
             $roots = @(
               'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -205,22 +323,35 @@
             if (-not (Test-Path $dotnet)) { throw "dotnet $architecture não encontrado: $dotnet" }
 
             $runtimes = @(& $dotnet --list-runtimes 2>&1)
+            $sdks = @(& $dotnet --list-sdks 2>&1)
             $oldPattern = '^' + [regex]::Escape($runtimeName) + '\s+' +
               [regex]::Escape($vulnerableVersion) + '(?:\s|$)'
             $targetPattern = '^' + [regex]::Escape($runtimeName) + '\s+' +
               [regex]::Escape($targetVersion) + '(?:\s|$)'
             $oldRuntime = @($runtimes | Where-Object { $_ -match $oldPattern })
             $targetRuntime = @($runtimes | Where-Object { $_ -match $targetPattern })
+            $oldSdk = if ($vulnerableSdkVersion) {
+              @($sdks | Where-Object { $_ -match ('^' + [regex]::Escape($vulnerableSdkVersion) + '\s') })
+            } else { @() }
+            $targetSdk = if ($correctedSdkVersion) {
+              @($sdks | Where-Object { $_ -match ('^' + [regex]::Escape($correctedSdkVersion) + '\s') })
+            } else { @() }
 
             Write-Output "registry_remaining=$($remainingRegistry.Count)"
             Write-Output "old_runtime_remaining=$($oldRuntime.Count)"
             Write-Output "target_runtime_present=$($targetRuntime.Count)"
+            Write-Output "old_sdk_remaining=$($oldSdk.Count)"
+            Write-Output "target_sdk_present=$($targetSdk.Count)"
             Write-Output ($runtimes -join "`n")
-            if ($remainingRegistry.Count -gt 0 -or $oldRuntime.Count -gt 0) {
+            Write-Output ($sdks -join "`n")
+            if ($remainingRegistry.Count -gt 0 -or $oldRuntime.Count -gt 0 -or $oldSdk.Count -gt 0) {
               throw "Versão vulnerável ainda presente após desinstalação"
             }
             if ($targetRuntime.Count -eq 0) {
               throw "Runtime corrigido $runtimeName $targetVersion ($architecture) não encontrado"
+            }
+            if ($correctedSdkVersion -and $targetSdk.Count -eq 0) {
+              throw "SDK corrigido $correctedSdkVersion ($architecture) não encontrado"
             }
           when: inst.family | default('') == 'dotnet'
           register: validation_out
