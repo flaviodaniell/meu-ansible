@@ -83,14 +83,41 @@
             uninstall_tool_install.rc not in [0, 3010]
 
         - name: "Remover runtime vulnerável com .NET Uninstall Tool: {{ package }}"
-          ansible.windows.win_command: >-
-            "{{ dotnet_uninstall_tool_exe }}" remove
-            {{ inst.vulnerable_version }} --aspnet-runtime
-            --{{ inst.architecture }} --yes
+          ansible.windows.win_shell: |
+            $ErrorActionPreference = 'Stop'
+            $tool = '{{ dotnet_uninstall_tool_exe }}'
+            $version = '{{ inst.vulnerable_version }}'
+            $architecture = '--{{ inst.architecture }}'
+            $versionPattern = '(?m)^\s*' + [regex]::Escape($version) + '\s+' +
+              [regex]::Escape('{{ inst.architecture }}') + '(?:\s|$)'
+
+            $aspnetList = @(& $tool list --aspnet-runtime $architecture 2>&1)
+            $hostingList = @(& $tool list --hosting-bundle 2>&1)
+            Write-Output '=== removable aspnet runtimes ==='
+            Write-Output ($aspnetList -join "`n")
+            Write-Output '=== removable hosting bundles ==='
+            Write-Output ($hostingList -join "`n")
+
+            if (($aspnetList -join "`n") -match $versionPattern) {
+              & $tool remove $version --aspnet-runtime $architecture --yes
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              Write-Output 'uninstall_tool_target=aspnet-runtime'
+            } elseif (($hostingList -join "`n") -match ('(?m)^\s*' + [regex]::Escape($version) + '(?:\s|$)')) {
+              & $tool remove $version --hosting-bundle --yes
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              Write-Output 'uninstall_tool_target=hosting-bundle'
+            } else {
+              # Algumas instalações (Visual Studio/manual) não são removíveis
+              # pela ferramenta. A etapa seguinte ainda tenta os comandos do registro.
+              Write-Output 'uninstall_tool_target=not-removable'
+            }
           register: dotnet_uninstall_out
           when: inst.family | default('') == 'dotnet'
           changed_when: >-
-            'Uninstalling' in (dotnet_uninstall_out.stdout | default(''))
+            'uninstall_tool_target=aspnet-runtime' in
+            (dotnet_uninstall_out.stdout | default('')) or
+            'uninstall_tool_target=hosting-bundle' in
+            (dotnet_uninstall_out.stdout | default(''))
 
         # O instalador .NET adiciona a versão corrigida lado a lado. Removemos
         # todas as entradas da versão vulnerável usando o comando registrado
