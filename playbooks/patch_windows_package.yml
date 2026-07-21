@@ -31,6 +31,10 @@
         architecture: x86
     inst: "{{ installers[package] | default({}) }}"
     dest: "C:\\Windows\\Temp\\sentinel_patch.{{ inst.type | default('bin') }}"
+    dotnet_uninstall_tool_url: "http://10.0.0.67:8081/dotnet-core-uninstall-1.7.661902.msi"
+    dotnet_uninstall_tool_sha256: "10f6bbacfaae062dcfcde8311cf8aaa3f8b6523e724e9bbc221c17adb59de65c"
+    dotnet_uninstall_tool_msi: "C:\\Windows\\Temp\\dotnet-core-uninstall.msi"
+    dotnet_uninstall_tool_exe: "C:\\Program Files (x86)\\dotnet-core-uninstall\\dotnet-core-uninstall.exe"
 
   tasks:
     - name: Abortar se o pacote não tiver instalador mapeado
@@ -58,6 +62,35 @@
           register: exe_out
           when: inst.type == 'exe'
           failed_when: exe_out.rc is defined and exe_out.rc not in [0, 3010]
+
+        - name: Baixar .NET Uninstall Tool oficial
+          ansible.windows.win_get_url:
+            url: "{{ dotnet_uninstall_tool_url }}"
+            dest: "{{ dotnet_uninstall_tool_msi }}"
+            checksum: "{{ dotnet_uninstall_tool_sha256 }}"
+            checksum_algorithm: sha256
+            force: true
+            timeout: 600
+          when: inst.family | default('') == 'dotnet'
+
+        - name: Instalar .NET Uninstall Tool oficial
+          ansible.windows.win_command: >-
+            msiexec /i "{{ dotnet_uninstall_tool_msi }}" /qn /norestart
+          register: uninstall_tool_install
+          when: inst.family | default('') == 'dotnet'
+          failed_when: >-
+            uninstall_tool_install.rc is defined and
+            uninstall_tool_install.rc not in [0, 3010]
+
+        - name: "Remover runtime vulnerável com .NET Uninstall Tool: {{ package }}"
+          ansible.windows.win_command: >-
+            "{{ dotnet_uninstall_tool_exe }}" remove
+            {{ inst.vulnerable_version }} --aspnet-runtime
+            --{{ inst.architecture }} --yes
+          register: dotnet_uninstall_out
+          when: inst.family | default('') == 'dotnet'
+          changed_when: >-
+            'Uninstalling' in (dotnet_uninstall_out.stdout | default(''))
 
         # O instalador .NET adiciona a versão corrigida lado a lado. Removemos
         # todas as entradas da versão vulnerável usando o comando registrado
@@ -171,6 +204,12 @@
           ansible.windows.win_file:
             path: "{{ dest }}"
             state: absent
+
+        - name: Remover o instalador temporário do .NET Uninstall Tool
+          ansible.windows.win_file:
+            path: "{{ dotnet_uninstall_tool_msi }}"
+            state: absent
+          when: inst.family | default('') == 'dotnet'
 
     - name: Resultado
       ansible.builtin.debug:
