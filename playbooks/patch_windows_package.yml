@@ -323,19 +323,35 @@
             )
             $remainingRegistry = @(Get-ItemProperty $roots -ErrorAction SilentlyContinue |
               Where-Object { $_.DisplayName -eq $name })
-            $dotnet = if ($architecture -eq 'x86') {
-              'C:\Program Files (x86)\dotnet\dotnet.exe'
-            } else {
-              'C:\Program Files\dotnet\dotnet.exe'
-            }
-            if (-not (Test-Path $dotnet)) { throw "dotnet $architecture não encontrado: $dotnet" }
+            $dotnetCandidates = if ($architecture -eq 'x86') {
+              @(
+                'C:\Program Files (x86)\dotnet\dotnet.exe',
+                'C:\Program Files\dotnet\x86\dotnet.exe'
+              )
+            } else { @('C:\Program Files\dotnet\dotnet.exe') }
+            $dotnet = $dotnetCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-            $runtimes = @(& $dotnet --list-runtimes 2>&1)
-            $sdks = @(& $dotnet --list-sdks 2>&1)
-            $oldPattern = '^' + [regex]::Escape($runtimeName) + '\s+' +
-              [regex]::Escape($vulnerableVersion) + '(?:\s|$)'
-            $targetPattern = '^' + [regex]::Escape($runtimeName) + '\s+' +
-              [regex]::Escape($targetVersion) + '(?:\s|$)'
+            if ($dotnet) {
+              $validationSource = "dotnet:$dotnet"
+              $runtimes = @(& $dotnet --list-runtimes 2>&1)
+              $sdks = @(& $dotnet --list-sdks 2>&1)
+              $oldPattern = '^' + [regex]::Escape($runtimeName) + '\s+' +
+                [regex]::Escape($vulnerableVersion) + '(?:\s|$)'
+              $targetPattern = '^' + [regex]::Escape($runtimeName) + '\s+' +
+                [regex]::Escape($targetVersion) + '(?:\s|$)'
+            } elseif ($architecture -eq 'x86') {
+              # Alguns hosts Windows x64 registram o runtime x86 sem instalar um
+              # muxer dotnet.exe x86. Nesse caso, a ferramenta oficial fornece o
+              # inventário de runtimes ASP.NET Core instalados/removíveis.
+              $validationSource = 'dotnet-uninstall-tool'
+              $runtimes = @(& '{{ dotnet_uninstall_tool_exe }}' list --aspnet-runtime --x86 2>&1)
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              $sdks = @()
+              $oldPattern = '^\s*' + [regex]::Escape($vulnerableVersion) + '\s+x86(?:\s|$)'
+              $targetPattern = '^\s*' + [regex]::Escape($targetVersion) + '\s+x86(?:\s|$)'
+            } else {
+              throw "dotnet $architecture não encontrado: $($dotnetCandidates -join ', ')"
+            }
             $oldRuntime = @($runtimes | Where-Object { $_ -match $oldPattern })
             $targetRuntime = @($runtimes | Where-Object { $_ -match $targetPattern })
             $oldSdk = if ($vulnerableSdkVersion) {
@@ -346,6 +362,7 @@
             } else { @() }
 
             Write-Output "registry_remaining=$($remainingRegistry.Count)"
+            Write-Output "validation_source=$validationSource"
             Write-Output "old_runtime_remaining=$($oldRuntime.Count)"
             Write-Output "target_runtime_present=$($targetRuntime.Count)"
             Write-Output "old_sdk_remaining=$($oldSdk.Count)"
