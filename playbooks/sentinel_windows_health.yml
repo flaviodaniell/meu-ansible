@@ -1,0 +1,51 @@
+---
+- name: Sentinel - diagnóstico operacional Windows
+  hosts: windows
+  gather_facts: false
+
+  vars:
+    monitored_services:
+      - WinRM
+      - W32Time
+      - EventLog
+
+  tasks:
+    - name: Coletar saúde do host sem alterar o sistema
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $os = Get-CimInstance Win32_OperatingSystem
+          $services = @('{{ monitored_services | join("','") }}') | ForEach-Object {
+            $service = Get-Service -Name $_ -ErrorAction SilentlyContinue
+            [pscustomobject]@{
+              name = $_
+              status = if ($service) { [string]$service.Status } else { 'NotFound' }
+            }
+          }
+          $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
+            [pscustomobject]@{
+              device = $_.DeviceID
+              free_gb = [math]::Round($_.FreeSpace / 1GB, 2)
+              size_gb = [math]::Round($_.Size / 1GB, 2)
+              free_percent = if ($_.Size) {
+                [math]::Round(($_.FreeSpace / $_.Size) * 100, 2)
+              } else { 0 }
+            }
+          }
+          [pscustomobject]@{
+            hostname = $env:COMPUTERNAME
+            collected_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            uptime_seconds = [int64]((Get-Date) - $os.LastBootUpTime).TotalSeconds
+            memory_free_percent = [math]::Round(
+              ($os.FreePhysicalMemory / $os.TotalVisibleMemorySize) * 100, 2
+            )
+            disks = @($disks)
+            services = @($services)
+          } | ConvertTo-Json -Depth 5 -Compress
+      register: sentinel_health
+      changed_when: false
+
+    - name: Publicar diagnóstico no resultado do job
+      ansible.builtin.debug:
+        msg: "{{ sentinel_health.output | default([]) | join('') }}"
+      changed_when: false
