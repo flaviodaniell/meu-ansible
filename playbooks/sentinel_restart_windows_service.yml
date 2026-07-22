@@ -1,0 +1,71 @@
+---
+- name: Sentinel - reinício controlado de serviço Windows
+  hosts: windows
+  gather_facts: false
+
+  vars:
+    sentinel_service_allowlist:
+      - Spooler
+      - W32Time
+      - WinRM
+
+  pre_tasks:
+    - name: Validar os parâmetros da remediação
+      ansible.builtin.assert:
+        that:
+          - service_name is defined
+          - service_name | string | length > 0
+          - service_name in sentinel_service_allowlist
+        fail_msg: >-
+          Serviço ausente ou não autorizado. Permitidos:
+          {{ sentinel_service_allowlist | join(', ') }}.
+        quiet: true
+
+    - name: Consultar o serviço antes da remediação
+      ansible.windows.win_service_info:
+        name: "{{ service_name }}"
+      register: service_before
+
+    - name: Exigir que o serviço exista no host
+      ansible.builtin.assert:
+        that:
+          - service_before.exists
+        fail_msg: "O serviço '{{ service_name }}' não existe em {{ inventory_hostname }}."
+        quiet: true
+
+  tasks:
+    - name: Reiniciar o serviço autorizado
+      ansible.windows.win_service:
+        name: "{{ service_name }}"
+        state: restarted
+      register: service_restart
+
+    - name: Confirmar que o serviço ficou em execução
+      ansible.windows.win_service_info:
+        name: "{{ service_name }}"
+      register: service_after
+      when: not ansible_check_mode
+
+    - name: Validar o resultado da remediação
+      ansible.builtin.assert:
+        that:
+          - service_after.exists
+          - service_after.services | length == 1
+          - service_after.services[0].state == 'started'
+        fail_msg: "O serviço '{{ service_name }}' não ficou em execução."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: Publicar resumo da remediação
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          service: "{{ service_name }}"
+          check_mode: "{{ ansible_check_mode }}"
+          changed: "{{ service_restart.changed }}"
+          previous_state: >-
+            {{ service_before.services[0].state | default('unknown') }}
+          final_state: >-
+            {{ (service_after.services[0].state
+                if (not ansible_check_mode and service_after.services | length > 0)
+                else 'not-verified-in-check-mode') }}

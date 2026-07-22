@@ -1,0 +1,104 @@
+---
+- name: Sentinel - autorizar Zabbix Server no agente Windows
+  hosts: windows
+  gather_facts: false
+
+  pre_tasks:
+    - name: Exigir o endereço do Zabbix Server
+      ansible.builtin.assert:
+        that:
+          - zabbix_server_ip is defined
+          - zabbix_server_ip is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+        fail_msg: "Informe zabbix_server_ip com um endereço IP válido."
+        quiet: true
+
+  tasks:
+    - name: Adicionar o Zabbix Server à allowlist do agente
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $serverIp = '{{ zabbix_server_ip }}'
+          $candidates = @(
+            'C:\Program Files\Zabbix Agent 2\zabbix_agent2.conf',
+            'C:\Program Files\Zabbix Agent\zabbix_agentd.conf'
+          )
+          $config = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $config) { throw 'Arquivo de configuração do agente Zabbix não encontrado.' }
+
+          $lines = [System.Collections.Generic.List[string]](Get-Content $config)
+          $index = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^\s*Server\s*=') { $index = $i; break }
+          }
+          $servers = @()
+          if ($index -ge 0) {
+            $servers = @(($lines[$index] -split '=', 2)[1] -split ',' |
+              ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          }
+          if ($servers -contains $serverIp) {
+            Write-Output "changed=false config=$config server=$serverIp"
+            exit 0
+          }
+
+          Copy-Item $config "$config.sentinel.bak" -Force
+          $servers += $serverIp
+          $newLine = 'Server=' + (($servers | Select-Object -Unique) -join ',')
+          if ($index -ge 0) { $lines[$index] = $newLine } else { $lines.Add($newLine) }
+          [IO.File]::WriteAllLines($config, $lines, [Text.UTF8Encoding]::new($false))
+          Write-Output "changed=true config=$config server=$serverIp backup=$config.sentinel.bak"
+      register: zabbix_config
+      changed_when: "'changed=true' in (zabbix_config.output | join(''))"
+      notify: Reiniciar Zabbix Agent 2
+
+    - name: Autorizar somente o Zabbix Server no firewall do Windows
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $name = 'Sentinel - Zabbix Agent 2 from {{ zabbix_server_ip }}'
+          $existing = Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue
+          if ($existing) {
+            $address = $existing | Get-NetFirewallAddressFilter
+            $port = $existing | Get-NetFirewallPortFilter
+            if ($existing.Enabled -eq 'True' -and $existing.Action -eq 'Allow' -and
+                $existing.Direction -eq 'Inbound' -and
+                $address.RemoteAddress -contains '{{ zabbix_server_ip }}' -and
+                $port.Protocol -eq 'TCP' -and $port.LocalPort -contains '10050') {
+              Write-Output "changed=false firewall_rule=$name"
+              exit 0
+            }
+            Remove-NetFirewallRule -DisplayName $name
+          }
+          New-NetFirewallRule -DisplayName $name -Direction Inbound -Action Allow `
+            -Protocol TCP -LocalPort 10050 -RemoteAddress '{{ zabbix_server_ip }}' `
+            -Profile Any | Out-Null
+          Write-Output "changed=true firewall_rule=$name"
+      register: zabbix_firewall
+      changed_when: "'changed=true' in (zabbix_firewall.output | join(''))"
+
+    - name: Aplicar a nova configuração imediatamente
+      ansible.builtin.meta: flush_handlers
+
+    - name: Garantir que o agente esteja automático e em execução
+      ansible.windows.win_service:
+        name: "Zabbix Agent 2"
+        start_mode: auto
+        state: started
+
+    - name: Confirmar que o agente está em execução
+      ansible.windows.win_service_info:
+        name: "Zabbix Agent 2"
+      register: zabbix_service
+
+    - name: Validar o estado do agente
+      ansible.builtin.assert:
+        that:
+          - zabbix_service.exists
+          - zabbix_service.services[0].state == 'started'
+        fail_msg: "Zabbix Agent 2 não ficou em execução após a configuração."
+        quiet: true
+
+  handlers:
+    - name: Reiniciar Zabbix Agent 2
+      ansible.windows.win_service:
+        name: "Zabbix Agent 2"
+        state: restarted
