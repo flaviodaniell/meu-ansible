@@ -50,6 +50,28 @@
       changed_when: "'changed=true' in (zabbix_config.output | join(''))"
       notify: Reiniciar Zabbix Agent 2
 
+    - name: Autorizar somente o Zabbix Server no firewall do Windows
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $name = 'Sentinel - Zabbix Agent 2 from {{ zabbix_server_ip }}'
+          $existing = Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue
+          if ($existing) {
+            Set-NetFirewallRule -DisplayName $name -Enabled True -Direction Inbound -Action Allow
+            Set-NetFirewallAddressFilter -AssociatedNetFirewallRule $existing `
+              -RemoteAddress '{{ zabbix_server_ip }}'
+            Set-NetFirewallPortFilter -AssociatedNetFirewallRule $existing `
+              -Protocol TCP -LocalPort 10050
+            Write-Output "changed=false firewall_rule=$name"
+            exit 0
+          }
+          New-NetFirewallRule -DisplayName $name -Direction Inbound -Action Allow `
+            -Protocol TCP -LocalPort 10050 -RemoteAddress '{{ zabbix_server_ip }}' `
+            -Profile Any | Out-Null
+          Write-Output "changed=true firewall_rule=$name"
+      register: zabbix_firewall
+      changed_when: "'changed=true' in (zabbix_firewall.output | join(''))"
+
     - name: Aplicar a nova configuração imediatamente
       ansible.builtin.meta: flush_handlers
 
