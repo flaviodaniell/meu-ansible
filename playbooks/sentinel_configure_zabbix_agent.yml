@@ -75,6 +75,12 @@
     - name: Aplicar a nova configuração imediatamente
       ansible.builtin.meta: flush_handlers
 
+    - name: Garantir que o agente esteja automático e em execução
+      ansible.windows.win_service:
+        name: "Zabbix Agent 2"
+        start_mode: auto
+        state: started
+
     - name: Confirmar que o agente está em execução
       ansible.windows.win_service_info:
         name: "Zabbix Agent 2"
