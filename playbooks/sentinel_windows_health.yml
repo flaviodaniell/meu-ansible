@@ -32,6 +32,10 @@
               } else { 0 }
             }
           }
+          # LoadPercentage já é a média entre os processadores lógicos — evita
+          # amostragem via Get-Counter, que exige dois pontos no tempo.
+          $cpuPercent = (Get-CimInstance Win32_Processor |
+            Measure-Object -Property LoadPercentage -Average).Average
           [pscustomobject]@{
             hostname = $env:COMPUTERNAME
             collected_at_utc = (Get-Date).ToUniversalTime().ToString('o')
@@ -39,6 +43,7 @@
             memory_free_percent = [math]::Round(
               ($os.FreePhysicalMemory / $os.TotalVisibleMemorySize) * 100, 2
             )
+            cpu_percent = [math]::Round($cpuPercent, 2)
             disks = @($disks)
             services = @($services)
           } | ConvertTo-Json -Depth 5 -Compress
@@ -49,3 +54,18 @@
       ansible.builtin.debug:
         msg: "{{ sentinel_health.output | default([]) | join('') }}"
       changed_when: false
+
+    - name: Interpretar o diagnóstico coletado
+      ansible.builtin.set_fact:
+        sentinel_health_data: "{{ (sentinel_health.output | default([]) | join('')) | from_json }}"
+      changed_when: false
+
+    # cacheable: true é o que faz o AWX expor isto em job.artifacts — é o
+    # contrato que o Sentinel/StackStorm (sentinel_aiops.operational_health_check)
+    # lê para decidir se aciona a remediação de CPU alta.
+    - name: Publicar cpu_percent como artifact do job (lido pelo Sentinel)
+      ansible.builtin.set_stats:
+        data:
+          cpu_percent: "{{ sentinel_health_data.cpu_percent | default(0) }}"
+        per_host: false
+        cacheable: true
