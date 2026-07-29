@@ -1,0 +1,114 @@
+---
+- name: Sentinel - finaliza o processo Windows que mais consome CPU
+  hosts: windows
+  gather_facts: false
+
+  vars:
+    # Processos de sistema do Windows — nunca são alvo de finalização
+    # automática, independente do quanto consumirem de CPU. Sem exceções de
+    # negócio por decisão explícita (só a lista padrão de sistema).
+    sentinel_cpu_kill_excluded_processes:
+      - System
+      - "System Idle Process"
+      - Idle
+      - Registry
+      - MemCompression
+      - csrss
+      - wininit
+      - winlogon
+      - services
+      - lsass
+      - smss
+      - svchost
+
+  tasks:
+    - name: Amostrar consumo de CPU por processo (duas leituras, 1s de intervalo)
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $cores = [Environment]::ProcessorCount
+          # A primeira leitura do contador "% Processor Time" costuma vir
+          # zerada/imprecisa — é descartada só para "aquecer" o contador.
+          Get-Counter '\Process(*)\% Processor Time' -ErrorAction Stop | Out-Null
+          Start-Sleep -Seconds 1
+          $sample = Get-Counter '\Process(*)\% Processor Time' -ErrorAction Stop
+
+          $top = $sample.CounterSamples |
+            Where-Object { $_.InstanceName -notin @('_total', 'idle') } |
+            Sort-Object CookedValue -Descending |
+            Select-Object -First 1
+
+          # Instâncias repetidas do mesmo nome vêm como "nome#1", "nome#2".
+          $processName = if ($top) { ($top.InstanceName -replace '#\d+$', '') } else { $null }
+          # Get-Process não expõe %CPU instantâneo por Id na mesma chamada;
+          # entre processos com o mesmo nome, usa o de maior tempo de CPU
+          # acumulado como melhor palpite de qual instância é a amostrada.
+          $processObj = if ($processName) {
+            Get-Process -Name $processName -ErrorAction SilentlyContinue |
+              Sort-Object CPU -Descending | Select-Object -First 1
+          } else { $null }
+
+          [pscustomobject]@{
+            process_name = $processName
+            cpu_percent = if ($top) { [math]::Round($top.CookedValue / $cores, 2) } else { 0 }
+            pid = if ($processObj) { $processObj.Id } else { $null }
+          } | ConvertTo-Json -Compress
+      register: sentinel_top_process_raw
+      changed_when: false
+
+    - name: Interpretar o processo identificado
+      ansible.builtin.set_fact:
+        sentinel_top_process: "{{ (sentinel_top_process_raw.output | default([]) | join('')) | from_json }}"
+
+    - name: Publicar o processo identificado
+      ansible.builtin.debug:
+        msg: "{{ sentinel_top_process }}"
+
+    - name: Decidir se o processo está protegido contra finalização automática
+      ansible.builtin.set_fact:
+        sentinel_cpu_kill_blocked: >-
+          {{
+            sentinel_top_process.process_name is none
+            or (sentinel_top_process.process_name | lower)
+               in (sentinel_cpu_kill_excluded_processes | map('lower') | list)
+          }}
+
+    - name: Falhar se não protegido mas sem PID identificado (bug de coleta)
+      ansible.builtin.assert:
+        that:
+          - sentinel_top_process.pid | default(0) | int > 0
+        fail_msg: "Processo alvo não pôde ser identificado (PID ausente)."
+        quiet: true
+      when: not sentinel_cpu_kill_blocked
+
+    # PID passado via "parameters" (não interpolado no corpo do script) —
+    # mesmo sendo um inteiro controlado (vem do Get-Process acima, não de
+    # entrada externa), este é o único passo destrutivo do playbook.
+    - name: Finalizar o processo identificado (graceful, com escalonamento para forçado)
+      ansible.windows.win_powershell:
+        parameters:
+          TargetPid: "{{ sentinel_top_process.pid }}"
+        script: |
+          param([int]$TargetPid)
+          $ErrorActionPreference = 'Stop'
+          Stop-Process -Id $TargetPid -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          if (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue) {
+            Stop-Process -Id $TargetPid -Force
+          }
+      when: not sentinel_cpu_kill_blocked
+      register: sentinel_kill_result
+
+    # O AWX expõe qualquer valor publicado via set_stats em job.artifacts —
+    # contrato lido por sentinel_aiops.kill_top_cpu_process. "outcome"
+    # distingue "killed" (finalizado) de "blocked_by_exclusion" (reportado,
+    # nada foi tocado) para o Sentinel não anunciar uma remediação que não
+    # aconteceu.
+    - name: Publicar resultado como artifact do job (lido pelo Sentinel)
+      ansible.builtin.set_stats:
+        data:
+          outcome: "{{ 'blocked_by_exclusion' if sentinel_cpu_kill_blocked else 'killed' }}"
+          process_name: "{{ sentinel_top_process.process_name | default('') }}"
+          pid: "{{ sentinel_top_process.pid | default(0) }}"
+          cpu_percent_before: "{{ sentinel_top_process.cpu_percent | default(0) }}"
+        per_host: false
