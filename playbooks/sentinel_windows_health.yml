@@ -60,12 +60,15 @@
         sentinel_health_data: "{{ (sentinel_health.output | default([]) | join('')) | from_json }}"
       changed_when: false
 
-    # cacheable: true é o que faz o AWX expor isto em job.artifacts — é o
-    # contrato que o Sentinel/StackStorm (sentinel_aiops.operational_health_check)
-    # lê para decidir se aciona a remediação de CPU alta.
+    # O AWX expõe qualquer valor publicado via set_stats em job.artifacts —
+    # é o contrato que o Sentinel/StackStorm
+    # (sentinel_aiops.operational_health_check) lê para decidir se aciona a
+    # remediação de CPU alta. "cacheable" não é aceito nesta versão do
+    # ansible.builtin.set_stats (o AWX rejeita com "Invalid options"); sem
+    # ele o valor ainda vai para os artifacts do job, só não persiste no
+    # fact cache entre plays — irrelevante aqui, o job roda uma vez.
     - name: Publicar cpu_percent como artifact do job (lido pelo Sentinel)
       ansible.builtin.set_stats:
         data:
           cpu_percent: "{{ sentinel_health_data.cpu_percent | default(0) }}"
         per_host: false
-        cacheable: true
